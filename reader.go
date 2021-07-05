@@ -2,58 +2,63 @@ package protostream
 
 import (
 	"bufio"
+	"encoding/binary"
+	"errors"
+	"hash/crc32"
 	"io"
 
-	"google.golang.org/protobuf/encoding/protowire"
+	"github.com/ddirect/check"
 	"google.golang.org/protobuf/proto"
 )
 
 type Reader struct {
-	buf               *bufio.Reader
-	sizeVarintMaxSize int // size of a varint representing maxSize
+	r        *bufio.Reader
+	nextSize int
+	buf      [maxSize + 6]byte
 }
 
-const maxVarint64Size = 10 // see protowire.SizeVarint(math.MaxUint64)
-
-func NewReader(r io.Reader, maxSize int) *Reader {
-	return &Reader{bufio.NewReaderSize(r, maxSize), int(protowire.SizeVarint(uint64(maxSize)))}
+func NewReader(r io.Reader) *Reader {
+	return &Reader{r: bufio.NewReader(r), nextSize: -1}
 }
 
-func (r *Reader) readVarintCore(maxSize int) (uint64, error) {
-	b, err := r.buf.Peek(maxSize)
-	if err != nil && err != io.EOF {
-		return 0, err
+func (r *Reader) readChunk() []byte {
+	size := r.nextSize
+	r.nextSize = -1
+	if size < 0 {
+		buf := r.buf[:2]
+		check.IE(io.ReadFull(r.r, buf))
+		size = int(binary.LittleEndian.Uint16(buf))
 	}
-	res, n := protowire.ConsumeVarint(b)
-	if n < 0 {
-		return 0, protowire.ParseError(n)
+	if size == 0 {
+		return nil
 	}
-	// this is guaranteed to succeed since we are discarding no more than the peeked size
-	r.buf.Discard(n)
-	return res, nil
+	// read data + crc + (optionally) next size
+	n := check.IE(io.ReadAtLeast(r.r, r.buf[:size+6], size+4))
+	switch n {
+	case size + 5:
+		check.E(r.r.UnreadByte())
+	case size + 6:
+		r.nextSize = int(binary.LittleEndian.Uint16(r.buf[size+4:]))
+	}
+	if crc32.Checksum(r.buf[:size+4], crcTable) != crcCheck {
+		panic(errors.New("CRC check failed"))
+	}
+	return r.buf[:size]
 }
 
-func (r *Reader) ReadVarint() (uint64, error) {
-	return r.readVarintCore(maxVarint64Size)
+func (r *Reader) ReadStream(chunkHandler func([]byte) error) (err error) {
+	defer check.Recover(&err)
+	for {
+		data := r.readChunk()
+		if len(data) == 0 {
+			return
+		}
+		check.E(chunkHandler(data))
+	}
 }
 
-func (r *Reader) ReadProto(m proto.Message) error {
-	size, err := r.readVarintCore(r.sizeVarintMaxSize)
-	if err != nil {
-		return err
-	}
-	data, err := r.buf.Peek(int(size))
-	if err != nil {
-		return err
-	}
-	defer r.buf.Discard(len(data))
-	return proto.Unmarshal(data, m)
-}
-
-func (r *Reader) ReadData(chunkHandler func([]byte) error) error {
-	size, err := r.ReadVarint()
-	if err != nil {
-		return err
-	}
-	//	todo :=
+func (r *Reader) ReadMessage(m proto.Message) (err error) {
+	defer check.Recover(&err)
+	check.E(proto.Unmarshal(r.readChunk(), m))
+	return
 }
