@@ -6,6 +6,7 @@ import (
 )
 
 const maxSize = 0x8000
+const errorPoint = maxSize + 1
 
 var crcTable = crc32.MakeTable(crc32.Castagnoli)
 var crcCheck = crc32.Checksum([]byte{0, 0, 0, 0}, crcTable)

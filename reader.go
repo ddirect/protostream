@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"io"
 
@@ -29,8 +30,10 @@ func (r *Reader) readChunk() []byte {
 		check.IE(io.ReadFull(r.r, buf))
 		size = int(binary.LittleEndian.Uint16(buf))
 	}
-	if size == 0 {
-		return nil
+	isErr := false
+	if size >= errorPoint {
+		size -= errorPoint
+		isErr = true
 	}
 	// read data + crc + (optionally) next size
 	n := check.IE(io.ReadAtLeast(r.r, r.buf[:size+6], size+4))
@@ -42,6 +45,9 @@ func (r *Reader) readChunk() []byte {
 	}
 	if crc32.Checksum(r.buf[:size+4], crcTable) != crcCheck {
 		panic(errors.New("CRC check failed"))
+	}
+	if isErr {
+		panic(fmt.Errorf("remote error: %s", r.buf[:size]))
 	}
 	return r.buf[:size]
 }
