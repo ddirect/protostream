@@ -13,43 +13,44 @@ import (
 )
 
 type Reader struct {
-	r        *bufio.Reader
-	nextSize int
-	buf      [maxSize + 6]byte
+	r              *bufio.Reader
+	nextSizeOffset int
+	buf            [maxSize + 8]byte // max data + length + crc + next length
 }
 
 func NewReader(r io.Reader) *Reader {
-	return &Reader{r: bufio.NewReader(r), nextSize: -1}
+	return &Reader{r: bufio.NewReader(r), nextSizeOffset: -1}
 }
 
 func (r *Reader) readChunk() []byte {
-	size := r.nextSize
-	r.nextSize = -1
-	if size < 0 {
-		buf := r.buf[:2]
-		check.IE(io.ReadFull(r.r, buf))
-		size = int(binary.LittleEndian.Uint16(buf))
+	sizeBuf := r.buf[:2]
+	if r.nextSizeOffset < 0 {
+		check.IE(io.ReadFull(r.r, sizeBuf))
+	} else {
+		binary.LittleEndian.PutUint16(sizeBuf, binary.LittleEndian.Uint16(r.buf[r.nextSizeOffset:]))
+		r.nextSizeOffset = -1
 	}
+	size := int(binary.LittleEndian.Uint16(sizeBuf))
 	isErr := false
 	if size >= errorPoint {
 		size -= errorPoint
 		isErr = true
 	}
 	// read data + crc + (optionally) next size
-	n := check.IE(io.ReadAtLeast(r.r, r.buf[:size+6], size+4))
+	n := check.IE(io.ReadAtLeast(r.r, r.buf[2:][:size+6], size+4))
 	switch n {
 	case size + 5:
 		check.E(r.r.UnreadByte())
 	case size + 6:
-		r.nextSize = int(binary.LittleEndian.Uint16(r.buf[size+4:]))
+		r.nextSizeOffset = size + 6
 	}
-	if crc32.Checksum(r.buf[:size+4], crcTable) != crcCheck {
+	if crc32.Checksum(r.buf[:size+6], crcTable) != crcCheck {
 		panic(errors.New("CRC check failed"))
 	}
 	if isErr {
-		panic(fmt.Errorf("remote error: %s", r.buf[:size]))
+		panic(fmt.Errorf("remote error: %s", r.buf[2:][:size]))
 	}
-	return r.buf[:size]
+	return r.buf[2:][:size]
 }
 
 func (r *Reader) ReadStream(chunkHandler func([]byte) error) (err error) {

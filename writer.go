@@ -25,7 +25,7 @@ func (w *Writer) Flush() error {
 
 func (w *Writer) writeCore(n int, hn int) {
 	binary.LittleEndian.PutUint16(w.buf[:], uint16(hn))
-	binary.LittleEndian.PutUint32(w.buf[2:][n:], crc32.Checksum(w.buf[2:][:n], crcTable))
+	binary.LittleEndian.PutUint32(w.buf[n+2:], crc32.Checksum(w.buf[:n+2], crcTable))
 	check.IE(w.w.Write(w.buf[:n+6]))
 }
 
